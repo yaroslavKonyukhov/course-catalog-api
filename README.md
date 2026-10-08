@@ -22,8 +22,9 @@ The server starts on http://127.0.0.1:8000, the interactive documentation is at 
 | Route | Description |
 | --- | --- |
 | `GET /` | Checks that the server is alive |
-| `GET /courses` | Course list with filtering (`is_elective`), sorting (`sort`) and pagination (`page`, `page_size`) |
+| `GET /courses` | Course list with filtering (`is_elective`), title search (`q`), sorting (`sort`) and pagination (`page`, `page_size`) |
 | `GET /courses/{course_id}` | A single course or a 404 error |
+| `GET /stats` | Catalog statistics (bonus task) |
 
 ## What was verified
 
@@ -42,5 +43,15 @@ All requests were sent to the running `fastapi dev main.py` server.
 | `/courses?page=2&page_size=2` | web-security, backend-fastapi |
 | `/courses?page=3&page_size=2` | databases-postgresql, api-design |
 | `/courses?page=4&page_size=2` | `[]` |
-| `/docs` | Swagger UI with three routes and the `Course` schema |
+| `/docs` | Swagger UI with the routes and the `Course` schema |
 | `/redoc`, `/openapi.json` | ReDoc page and the OpenAPI description of the API |
+
+## Bonus tasks
+
+| Bonus | Request | Result |
+| --- | --- | --- |
+| `sort` is `Literal["popular", "title"]` | `/courses?sort=banana` | 422, `Input should be 'popular' or 'title'`; `/docs` shows a dropdown |
+| `page` and `page_size` are limited with `Query` | `/courses?page=0`, `/courses?page_size=1000` | 422 for both |
+| Title search with `q` | `/courses?q=react` | modern-frontend |
+| | `/courses?q=api` | backend-fastapi, api-design |
+| `GET /stats` with the `Stats` model | `/stats` | `{"total": 6, "total_credits": 28, "electives": 2}` |
