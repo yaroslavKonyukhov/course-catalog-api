@@ -63,8 +63,8 @@ All requests were sent to the running `fastapi dev main.py` server.
 
 ### CORS
 
-`CORSMiddleware` allows exactly one origin, `http://localhost:3000` — the Next.js
-frontend. The browser lets the frontend's JavaScript read a response from this API
+`CORSMiddleware` allows exactly one origin by default, `http://localhost:3000` — the
+Next.js frontend. The browser lets the frontend's JavaScript read a response from this API
 only if the response carries `access-control-allow-origin` with the page's origin.
 Requests from the Next.js server (Server Components) do not need it, requests from
 Client Components (the filter, the like button, the enrollment form) do.
@@ -100,3 +100,35 @@ Likes and enrollments live in memory and reset on every restart of the server.
 | the same with `"studentName": "A"` | 422, `"loc": ["body", "studentName"]`, `"msg": "String should have at least 2 characters"` |
 | the same with `"courseId": "nope"` | 404, `{"detail": "Course not found"}` |
 | `GET /enrollments` | `[{"courseId": "web-security", "studentName": "Aigerim", "id": 1}]` |
+
+## Lab 5 bonus tasks
+
+### Allowed origins from an environment variable
+
+`allow_origins` is read from `CORS_ORIGINS` (a comma-separated list), with
+`http://localhost:3000` as the fallback for development. To allow a second
+origin, set the variable before starting the server:
+
+```
+$env:CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
+fastapi dev main.py
+```
+
+| Origin | Without `CORS_ORIGINS` | With both origins |
+| --- | --- | --- |
+| `http://localhost:3000` | allowed | allowed |
+| `http://127.0.0.1:3000` | no `access-control-allow-origin` | allowed |
+| `http://evil.example` | no `access-control-allow-origin` | no `access-control-allow-origin` |
+
+### Explicit lists instead of asterisks
+
+`allow_methods=["GET", "POST"]` and `allow_headers=["Content-Type"]` allow exactly
+what the frontend sends. An explicit list is safer because a browser page can use
+only the methods and headers the API was designed for, and anything new has to be
+allowed on purpose.
+
+| Preflight to `/enrollments` | Result |
+| --- | --- |
+| `POST`, `content-type` | 200, `access-control-allow-methods: GET, POST` |
+| `DELETE`, `content-type` | 400, `Disallowed CORS method` |
+| `POST`, `content-type, authorization` | 400, `Disallowed CORS headers` |
