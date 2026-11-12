@@ -1,7 +1,7 @@
 # course-catalog-api
 
-Backend of the course catalog: FastAPI, SQLAlchemy 2.1, PostgreSQL, and Alembic
-migrations (Labs 4–7 of "Advanced Web Technologies").
+Backend of the course catalog: FastAPI, SQLAlchemy 2.1, PostgreSQL, Alembic and
+GraphQL on Strawberry as a second entrance (Labs 4–8, "Advanced Web Technologies").
 
 ## How to run
 
@@ -28,104 +28,122 @@ fastapi dev main.py
 ```
 
 On Windows (PowerShell) the activation is `.venv\Scripts\Activate.ps1` and the copy is
-`Copy-Item .env.example .env`. Optional checks with the server running:
-`python check_db.py`, `python check_models.py`, `python try_errors.py` (prints `5 of 5 as expected`).
+`Copy-Item .env.example .env`. With the server running, the checks in a second window:
+`python try_errors.py` (5 of 5), `python try_graphql.py` (8 of 8),
+`python try_n_plus_1.py` (3 and 3), `python measure.py`.
 
-API documentation: http://localhost:8000/docs. The password `change-me` is for
-teaching; in a real project, passwords are never put into the repository.
+REST docs: http://localhost:8000/docs. GraphiQL: http://localhost:8000/graphql.
+The password `change-me` is for training; real projects don't commit passwords.
 
 | File | What it does |
 |------|--------------|
-| `config.py` | `Settings`: `DATABASE_URL` and `SQL_ECHO` from the environment or `.env` |
-| `db.py` | `naming_convention`, `Base`, the Engine, `SessionLocal`, the `get_db` dependency |
-| `models.py` | SQLAlchemy models `Course`, `Student`, `Enrollment` |
-| `schemas.py` | Pydantic schemas of the JSON (camelCase) |
-| `main.py` | the routes and the "constraint name → HTTP response" mapping |
-| `alembic/`, `alembic.ini` | migrations `0001` (the three tables) and `0002` (`courses.level`) |
-| `seed.sql` | initial data; clears the tables first, for the training database only |
-| `check_db.py`, `check_models.py`, `try_errors.py` | connection, models-vs-database, and error-response checks |
-| `try_n_plus_1.py`, `try_lost_update.py`, `try_delete.py` | bonus experiments 3–5 |
+| `services.py` | application rules (`create_student`, `enroll`, `like_course`) and `ServiceError` with a code |
+| `problem.py` | REST errors in the Problem Details format |
+| `graphql_api.py` | the GraphQL schema: types, queries, mutations, DataLoaders, protection |
+| `counter.py` | counts SQL queries per HTTP request into the `X-SQL-Queries` header |
+| `main.py` | REST routes; mounts `/graphql` |
+| `config.py`, `db.py`, `models.py`, `schemas.py`, `alembic/` | settings, Engine and sessions, models, JSON schemas, migrations (Lab 7) |
+| `try_errors.py`, `try_graphql.py`, `try_n_plus_1.py`, `try_protection.py`, `flood_likes.py`, `measure.py`, `print_schema.py` | check and measurement scripts |
+| `seed.sql`, `more_students.sql` | starting data; 17 more students for experiment 4 |
 
 ## What changed in the API
 
-- The data lives in PostgreSQL instead of the `data.py` list and the `ENROLLMENTS` list: likes, students, and enrollments survive a server restart (after two likes and a restart `api-design` still had 13 likes).
-- `POST /enrollments` now takes `{"courseId": "...", "studentId": 4}` instead of `studentName`: an enrollment refers to a row of `students`. The response has the database's `id` and `enrolledAt`. The Lab 5 enrollment form of the frontend sends `studentName` and gets 422 until it is updated.
-- New routes: `POST /students` (`{"name", "email"}`, 201 with the issued `id`) and `GET /stats/courses` (enrollments per course, courses without enrollments get 0). `GET /enrollments` returns `courseTitle` and `studentName`, joined from `courses` and `students`.
-- Each course has a required `level` (`beginner` for electives, `intermediate` for the rest after migration `0002`); `GET /courses?level=beginner` filters by it and combines with `is_elective`, `sort`, `page`, `page_size`.
-- Database constraint violations become responses by the constraint name: a taken email or a repeated enrollment — 409, an unknown course or student — 404, any other violation — 500. A short name is rejected by Pydantic with 422 before the database.
-- Following the Lab 7 skeleton of `main.py`, the Lab 4–5 extras were dropped: the `q` search, `GET /stats`, `Literal` for `sort`, the `Query` bounds on pagination, and `CORS_ORIGINS` (the allowed origin is `http://localhost:3000`).
+- REST errors are Problem Details (RFC 9457): content type `application/problem+json`, body `{type, title, status, detail, instance}`. A rule error has its own `type` (`https://example.com/problems/already-enrolled`, `…/email-taken`, `…/course-not-found`, `…/student-not-found`); Starlette's own errors (unknown address, wrong method) get `about:blank` and the status phrase, `405` keeps the `Allow` header. The rules and their codes live in `services.py`, the translation into statuses in `problem.py`; `main.py` has no `HTTPException` or `IntegrityError` left.
+- `/graphql` is a second entrance to the same database and services: one address, one schema (`Course`, `Student`, `Enrollment`; queries `courses`, `course`, `students`, `student`, `enrollments`). A browser GET opens GraphiQL, an editor with hints and schema docs; an ordinary client sends `POST` with JSON `{query, variables}` and gets JSON `{data, errors}`.
+- Mutations `enroll(input: {courseId, studentId})` and `likeCourse(id)` return an envelope with the value and `userErrors`. An expected rule error (repeated enrollment, unknown course or student) is in `data` as `userErrors[].code` with the same code as in REST; an error in the query text or an unexpected failure is in `errors`. GraphQL answers both with status 200; mutations over `GET` are rejected with 400.
+- Every response has the `X-SQL-Queries` header: the number of SQL queries the server ran for this HTTP request. It made the N+1 problem visible and proves the effect of the DataLoaders.
+- Protection of `/graphql`: depth at most 5, at most 10 aliases, `limit` must be 1..100, `id` must be a number; the text of unexpected errors is replaced with `Unexpected error.` (the cause stays in the server log). Introspection is controlled by `GRAPHQL_INTROSPECTION` (`true` by default, `false` turns it off).
+- New REST routes: `GET /students/{id}` and `GET /students/{id}/enrollments` (404 `student-not-found` for an unknown student).
 
-## Migrations
+## Example queries
 
-| Command | What it does |
-|---------|--------------|
-| `alembic upgrade head` | applies all the missing migrations |
-| `alembic downgrade -1` | rolls back the last migration |
-| `alembic current` | shows the version of the database |
-| `alembic history` | shows the chain of migrations |
-| `alembic revision --autogenerate -m "text"` | writes a draft from models vs. database |
-| `alembic check` | reports whether the models and the database have diverged |
-| `alembic upgrade 0001:0002 --sql` | prints the SQL of a migration without running it |
-| `alembic stamp head` | marks the database as up to date without running migrations |
+The "My courses" query (in the GraphiQL Variables panel: `{"id": "2"}`):
 
-The database from Lab 6 already had the tables, so it was marked with `alembic stamp head`
-(`alembic upgrade head` failed with `DuplicateTable: relation "courses" already exists` and
-rolled back). Migration `0001` was generated with autogenerate against an empty `scratch`
-database. A new database is built with `alembic upgrade head`.
+```graphql
+query MyCourses($id: ID!) {
+  student(id: $id) {
+    name
+    enrollments {
+      id
+      course { title credits level }
+    }
+  }
+}
+```
+
+```json
+{"data": {"student": {"name": "Daniyar Bekov", "enrollments": [
+  {"id": "3", "course": {"title": "Modern Frontend: React & Next.js", "credits": 5, "level": "intermediate"}},
+  {"id": "4", "course": {"title": "Backend Foundations: FastAPI", "credits": 5, "level": "intermediate"}},
+  {"id": "5", "course": {"title": "AI/LLM Integration", "credits": 5, "level": "beginner"}}]}}}
+```
+
+The `enroll` mutation (Variables: `{"input": {"courseId": "web-security", "studentId": "3"}}`):
+
+```graphql
+mutation Enroll($input: EnrollInput!) {
+  enroll(input: $input) {
+    enrollment { id enrolledAt course { title } }
+    userErrors { code message }
+  }
+}
+```
+
+The first answer and the answer on a repeated enrollment:
+
+```json
+{"data": {"enroll": {"enrollment": {"id": "10", "enrolledAt": "2026-11-13T01:23:28.748776+05:00",
+  "course": {"title": "Web Security Essentials"}}, "userErrors": []}}}
+
+{"data": {"enroll": {"enrollment": null, "userErrors": [
+  {"code": "ALREADY_ENROLLED", "message": "Student is already enrolled in this course"}]}}}
+```
+
+## REST vs GraphQL comparison
+
+The "My courses" screen of student 2; numbers from `measure.py`, starting data.
+
+| Criterion | REST | GraphQL | Source |
+|-----------|------|---------|--------|
+| Requests and rounds per screen | 5 requests in 2 rounds (student + enrollments, then 3 courses) | 1 request in 1 round | `measure.py`, step 8 |
+| Bytes in the responses | 1145: full courses (description, likes, isElective), names and times in enrollments | 339: only name, title, credits, level | `measure.py`, step 8 |
+| SQL queries per screen | 5 (1 student + 1 enrollments + 1 per course) | 3 (student, enrollments, courses in one `IN`) | `measure.py`, `X-SQL-Queries` |
+| SQL growth with more students | each route is one query with a known shape; the screen grows by 1 request and 1 query per course of the student | before DataLoaders 7 → 27 and 7 → 24 (3 → 20 students); after them 3 and 3 regardless of the number of rows | `try_n_plus_1.py`, experiments 4–5 |
+| Error in the query text | a real status: 404 for an unknown address, 422 for invalid parameters | status 200, `data: null`, `errors[].message` with `Did you mean …`; the client must check `errors` | experiments 1 and 8 |
+| Expected rule error (repeated enrollment) | 409, `application/problem+json`, `type …/already-enrolled` | 200, `data.enroll.userErrors[0].code = ALREADY_ENROLLED` | steps 1 and 4 |
+| HTTP cache | `GET` on a unique URL: browser, proxy and CDN cache it with `Cache-Control` / `ETag` | `POST` to one `/graphql` address is not cached by HTTP; needs a client cache or persisted queries over `GET` | lecture section 14 |
+| Protection from "expensive" queries | the cost is fixed by the route (one query, its own limit); a rate limiter counts requests | the client builds the query: needed depth and alias limits, argument checks, error masking; without them a depth-6 cycle ran, 12 likes went in one POST (24 SQL), SQL text leaked | experiments 6 and 7 |
+
+**Conclusion.** For a screen that joins several resources and shows a few fields of each, like "My courses", GraphQL wins: 1 request instead of 5, one round instead of two, 339 bytes instead of 1145, and with DataLoaders 3 SQL queries that don't grow with the data. Simple public reads of one resource (the course list and a course page) I would keep on REST: they are cached by HTTP for free, errors have honest statuses, and their cost is fixed by the route. GraphQL needs extra work that REST does not: DataLoaders against N+1, protection against expensive queries, and a client that checks `errors`, because status 200 says nothing.
 
 ## Experiment log
 
 | # | Experiment | What I saw | Cause | How I fixed it |
 |---|------------|------------|-------|----------------|
-| 1 | the `uq` template in `naming_convention` changed | `check_models.py`: names only in models `enrollments_course_id_unique`, `students_email_unique`; only in database `enrollments_course_id_student_id_key`, `students_email_key` | the template `%(table_name)s_%(column_0_name)s_unique` builds other names than PostgreSQL chose in Lab 6; Alembic would want to recreate the constraints, the error mapping would not find them | restored `%(table_name)s_%(column_0_N_name)s_key`, the check prints `none` twice |
-| 2 | `min_length` removed from `StudentIn`, name `N` | `POST /students` → 500; in the log `IntegrityError: (psycopg.errors.CheckViolation) … violates check constraint "students_name_check"`, `Failing row contains (7, N, n@example.com)` | the request reached the database, the CHECK kept the row out, but `students_name_check` is not in `CONSTRAINT_ERRORS`, so it was treated as a bug | restored `Field(min_length=2)`: Pydantic answers 422, the CHECK stays as insurance; `try_errors.py` 5 of 5 |
-| 3 | a typo in a constraint name in the dictionary | `POST /students` with `aigerim@example.com` → 500; the log shows the real name `unique constraint "students_email_key"` | the key `students_email_uniq` does not match `exc.orig.diag.constraint_name` | restored the key `students_email_key` |
-| 4 | `title` without `NOT NULL` in the database, `alembic check` | `Detected NOT NULL on column 'courses.title'`, `FAILED: New upgrade operations detected: [[('modify_nullable', …` (non-zero exit code); with `varchar(100)`: `Detected type change from VARCHAR(length=100) to Text()`, `modify_type` | `alembic check` compares the models with the real database and sees manual changes | `ALTER COLUMN title SET NOT NULL`, `TYPE text`; `No new upgrade operations detected.` |
-| 5 | automatic migration `0002` on existing data | `IntegrityError: (psycopg.errors.NotNullViolation) column "level" of relation "courses" contains null values`, `[SQL: ALTER TABLE courses ADD COLUMN level TEXT NOT NULL]`; `alembic current` stayed `0001` | autogenerate compares schemas, not data: the six existing rows have no value for a NOT NULL column without a default | rewrote `0002` in three steps: add the column with NULL, fill it with an UPDATE, set NOT NULL |
-| 6 | `import models` commented out in `env.py` | `--autogenerate` detected `removed table 'courses'`, `'students'`, `'enrollments'` and the index; `0003_oops.py` had `op.drop_table` for all three (here even `courses` before `enrollments`) | without the import the models are not registered, `Base.metadata` is empty, so the whole database looks superfluous | deleted `0003_oops.py` without running it, restored `import models` |
-| 7 | a `phone` field in the model without a migration | `Detected added column 'students.phone'`, `FAILED: New upgrade operations detected: [('add_column', None, 'students', Column('phone', …` | the model went ahead of the database: no migration was written | removed the line; `alembic check` clean |
-| 8 | two migrations from one revision | `alembic heads`: `0003 (head)`, `0004 (head)`; `upgrade head`: `FAILED: Multiple head revisions are present for given argument 'head'` | `0003` and `0004` both have `down_revision = '0002'`, the history forked | `alembic merge heads --rev-id 0005` gave one head (`0003, 0004 -> 0005 (mergepoint)`, an empty merge); then deleted 0003–0005, one head `0002` |
+| 1 | a typo in a field name, an argument name in `snake_case` | `titel`: HTTP 200, `data: null`, `Cannot query field 'titel' on type 'Course'. Did you mean 'title', 'level', or 'likes'?` (line 1, column 30); `is_elective`: 200, `Unknown argument 'is_elective' on field 'Query.courses'. Did you mean 'isElective'?`. REST `/courses/no-such` gave a real 404 | the engine validates the query against the schema before execution and reports problems in `errors`; HTTP status only describes the transport. Strawberry exposes snake_case names as camelCase | used `title` and `isElective`; a client must check `errors`, not the status |
+| 2 | `\| None` removed from the `course` query, a nonexistent course | the schema became `course(id: ID!): Course!`; `course(id: "nope")` → `data: null`, `Cannot return null for non-nullable field Query.course.`, `path: ["course"]`; with aliases `a` (exists) and `b` (nope) the whole `data` was null, `path: ["b"]`; in the server log `TypeError` | `!` is a promise; a null in a non-null field propagates to the nearest nullable parent, here the whole `data`, and the valid field `a` was lost | returned `CourseType \| None`: `{"a": {"title": "API Design: REST vs GraphQL"}, "b": null}` |
+| 3 | a mutation with the GET method | a GET query worked (200, likes 13); `GET /graphql?query=mutation{likeCourse…}` → 400, `text/plain`, `mutations are not allowed when using GET`; likes stayed 13 | GET must be safe: it can be repeated, prefetched and cached, a link must not change data, so the server accepts mutations only in POST | nothing to fix: mutations are sent with POST |
+| 4 | `more_students.sql`: 3 and 20 students, the SQL counter | 3 students: 7 and 7 SQL queries; 20 students (23 enrollments): 27 and 24. The SQL log: 1 students + 3 enrollments queries (`student_id = 1, 2, 3`) + 3 course queries | lazy loading in resolvers: one query per parent object (N+1). 1 + 20 + 6 and 1 + 6 + 17; the identity map saves repeated courses. Status, JSON size and speed in GraphiQL don't show it, only the counter | DataLoaders (step 6): 3 and 3 on 20 students |
+| 5 | a DataLoader batch function that doesn't sort rows by key | the students query: `data: null`, `Received wrong number of results in dataloader, expected: 3, received: 6` (`WrongNumberOfResultsReturned`); the enrollments query: no errors, but enrollments 2, 4, 5, 6 got someone else's course (2: Backend instead of AI/LLM, 4: AI/LLM instead of Backend, 5 and 6: Backend instead of AI/LLM) | the loader hands out results by position; with `ORDER BY id DESC` the rows came as modern-frontend, backend-fastapi, ai-integration while the keys were modern-frontend, ai-integration, backend-fastapi. The second error is worse: the length matched, so nothing was reported and the data was silently wrong | restored the original function: rows are grouped by key value in `groups` and returned in key order |
+| 6 | six dangerous queries without protection and with it | see the table below | without limits the server executes whatever the client wrote and puts the full exception text into `errors` | `QueryDepthLimiter(5)`, `MaxAliasesLimiter(10)`, `check_limit`, `parse_id`, `MaskErrors(should_mask)` |
+| 7 | introspection off, a typo in a field name | `GRAPHQL_INTROSPECTION=false`: `{ __schema … }` rejected (`GraphQL introspection has been disabled, but the requested query contained the field '__schema'.` and the same for `queryType`); ordinary queries and `try_graphql.py` 8 of 8 kept working; `{ cours { title } }` → `Did you mean 'course' or 'courses'?` | `DisableIntrospection` blocks only `__schema`/`__type`; validation hints still name real fields, so the schema can be guessed field by field. Introspection is not authorization | removed the line from `.env`, introspection is on again for GraphiQL |
+| 8 | client failures: a typo, no `errors` check, the API stopped | typo: page 500, `Error [GraphQLRequestError]: Cannot query field 'titel' on type 'Course'. Did you mean …` at `gql (lib/graphql.ts:30:34)`; check removed: `TypeError: Cannot destructure property 'student' of '(intermediate value)' as it is null.`; API stopped: `TypeError: fetch failed` | GraphQL errors come with status 200, so `res.ok` is true; only the `errors` check turns them into an exception with the real cause. Without it `data: null` crashes the page later and the cause is lost. With the API down there is no answer at all | restored both files; started the API again, the page is 200 |
 
-The `upgrade → downgrade → upgrade` cycle for `0002`: after `downgrade -1` the query
-`SELECT id, level FROM courses` failed with `column "level" does not exist`; after
-`upgrade head` the levels were back, filled by the rule from the migration.
+Experiment 6, the same queries without protection and with it (`try_protection.py`, `flood_likes.py`):
+
+| Query | Without protection | With protection |
+|-------|--------------------|-----------------|
+| a depth-6 cycle | executed, data arrived | `'Cycle' exceeds maximum operation depth of 5` |
+| 12 aliases | executed; 12 `likeCourse` in one POST: likes 12 … 23, 24 SQL queries | `12 aliases found. Allowed: 10`, 0 SQL queries, likes unchanged |
+| `limit: -1` | `(psycopg.errors.InvalidRowCountInLimitClause) LIMIT must not be negative` + the SQL text and `[parameters: {'param_1': -1}]` | `limit must be between 1 and 100` |
+| `id: "abc"` | `invalid literal for int() with base 10: 'abc'` | `Invalid ID: 'abc'` (`student` is null, the rest of `data` stays) |
+| `id` of 20 digits | `(psycopg.errors.NumericValueOutOfRange) bigint out of range` + the SQL text and parameters | `Unexpected error.` (the `DataError` is in the server log) |
+| introspection | the schema arrived | the schema arrived (it is on); with `GRAPHQL_INTROSPECTION=false` rejected |
+
+Answers. Without protection the client learned the table and column names, the full SQL text with the parameter values, the driver (`psycopg`) and the ORM (the `sqlalche.me` link), and that `id` is parsed with Python's `int()`. We wrote `check_limit` and `parse_id` because `Invalid ID: 'abc'` tells the client what to fix, while `Unexpected error.` only says that something broke; masking is the safety net for cases we did not foresee. With `max_depth=2` the "My courses" query (`student → enrollments → course`, depth 3) and the try_graphql case `student(id: 2) → enrollments → course` would be rejected.
 
 ## Decisions
 
-- The response is chosen by the constraint name because the name is exact: SQLSTATE `23505` is the same for every UNIQUE (we have two, the email and the enrollment pair, with different messages), and the message text depends on the server version and language. The names are fixed by `naming_convention` and checked by `check_models.py`. The error is caught after `commit()` because a check with a `SELECT` in advance is a race: between the check and the INSERT another request can take the same email, and only the database constraint is reliable; one attempt also costs one query instead of two.
-- A like is `UPDATE courses SET likes = likes + 1 … RETURNING`: the database adds one under a row lock, so two simultaneous likes give +2. Reading the number into the program and writing a new one back loses an update: both requests read 11 and both write 12 (bonus 4 shows it).
-- Migration `0002` is split into three steps because `ADD COLUMN level TEXT NOT NULL` cannot be applied to a table that already has rows: first the column allows NULL, then an UPDATE fills the existing rows by our rule (a decision about data that autogenerate cannot make), then NOT NULL is set. All three run in one transaction, so a failure leaves the database at `0001`.
-
-## Migration 0002 self-check
-
-| What to check | Result |
-|---------------|--------|
-| Goal and steps | yes: one change — a required `courses.level`; three steps: add with NULL, fill, forbid NULL |
-| Data | yes: the six existing rows get `beginner` (electives) or `intermediate` (the rest) by an UPDATE before NOT NULL |
-| Renames and drops | yes: nothing is renamed or dropped in `upgrade`; only a new column is added |
-| Rollback | yes: `downgrade` drops the column; the levels are lost, which is acceptable here because the rule restores them, but not if users had chosen levels by hand |
-| Verification | yes: the SQL from `alembic upgrade 0001:0002 --sql` was read (BEGIN, ALTER, UPDATE, ALTER, version update, COMMIT); the `downgrade -1 → upgrade head` cycle passed; `alembic check` is clean |
-| History | yes: `alembic heads` shows one head `0002`; the migration is in the same commit as the model, the schema, the `level` filter, and `seed.sql` |
-| Application | yes: responses get a new `level` field, `GET /courses` gets an optional `level` filter; `CourseOut` and `seed.sql` are updated; nothing else changes for clients |
-
-## Bonus
-
-### 1. A CHECK that autogenerate does not see
-
-With `CheckConstraint("level IN ('beginner', 'intermediate', 'advanced')", name="level")` in the model, `alembic check` printed `No new upgrade operations detected.` and `--autogenerate` produced an empty migration (`pass`): Alembic does not compare CHECK constraints, their SQL text is normalized by PostgreSQL differently from the source and cannot be compared reliably. The hand-written `0003` with `op.create_check_constraint(op.f("courses_level_check"), …)` worked: `UPDATE courses SET level = 'expert'` failed with `violates check constraint "courses_level_check"`. `downgrade` with the plain string `"courses_level_check"` failed: `constraint "courses_courses_level_check_check" … does not exist` — a name not wrapped in `op.f` goes through the `ck` template again. With `op.f("courses_level_check")` the rollback worked. `op.f` marks a name as final. The model's `students_email_format` (from the Lab 6 bonus) uses `conv(...)`, the same marker, for the same reason. The file and the model line were removed afterwards.
-
-### 2. Renaming a column without losing data
-
-On a `scratch` copy (`alembic upgrade head` + `seed.sql`), renaming `description` to `summary` in the model made autogenerate propose `add_column('summary', nullable=False)` and `drop_column('description')`: all descriptions would be lost, and the NOT NULL column would fail on a non-empty table. With `op.alter_column("courses", "description", new_column_name="summary")` the migration ran, `alembic check` was clean, and `SELECT id, summary` showed the old descriptions; `downgrade` renamed it back. `alter_column(new_column_name=…)` is one `ALTER TABLE … RENAME COLUMN`: the data stays in place. The "add and drop" pair creates an empty column and destroys the old one with its data. Everything was reverted and `scratch` dropped.
-
-### 3. The N+1 problem
-
-`try_n_plus_1.py`: `lazy enrollments: 6, queries: 7`, `selectinload enrollments: 6, queries: 2`. Lazy loading sends one query for the list and one per course when `course.enrollments` is touched. With `SQL_ECHO=true` N+1 is visible as the same `SELECT … FROM enrollments WHERE %(param_1)s::VARCHAR = enrollments.course_id` repeated after one list query, with `[cached since …]` and a new course id each time. `selectinload` loads all related rows with one extra `SELECT … WHERE course_id IN (…)`; `joinedload` adds a `LEFT OUTER JOIN` to the main query, one query in total but the course columns are repeated for every enrollment, which is good for many-to-one and worse for long one-to-many lists.
-
-### 4. A lost update in the ORM
-
-`try_lost_update.py` with `a.likes += 1` / `b.likes += 1`: `Alice reads 11 | Bob reads 11`, `in the database: 12` — both sessions computed 12 in Python from the same old value and sent `SET likes = 12`. With `a.likes = Course.likes + 1` (the version kept in the repository) the result is 13: the ORM sends `SET likes = likes + 1`, and the database computes it from the current row. Bob's UPDATE waits for the row lock held by Alice's transaction (the lock from Lab 6, bonus 2), then reads the committed 12 and adds one.
-
-### 5. passive_deletes and the cascade in the database
-
-Without `passive_deletes=True` on `Student.enrollments`, `try_delete.py` failed: `IntegrityError: (psycopg.errors.NotNullViolation) null value in column "student_id"`, `[SQL: UPDATE enrollments SET student_id=… ]`, `[parameters: {'student_id': None, 'enrollments_id': 6}]` — the ORM loaded the enrollments and tried to detach them by writing NULL into a required column; nothing was deleted (3 students, 6 enrollments). With `passive_deletes=True` the ORM sends only `DELETE FROM students`, and `ON DELETE CASCADE` in the database removes the enrollment: 2 students, 5 enrollments. The two go together: the database does the cascade, and the ORM must not do its own "detach" in front of it. The data was restored with `seed.sql`.
+- The rules and their errors are written once in `services.py`, and each layer only translates the code (`PROBLEMS` in REST, `UserError` in GraphQL). Checking everything in both layers would duplicate the constraint names and messages; the copies drift apart, and then the same repeated enrollment gives different answers in REST and GraphQL. Now a new rule is added in one place, and both APIs report the same code.
+- Loaders live in `Context` because it is created per HTTP request: the loader's cache by key must not outlive the request, otherwise one user would get another's data and changes in the database would not be seen; the loader also holds this request's session. The batch function matches rows to keys by value because the database returns rows in any order, and a loader distributes results by position: experiment 5 showed silently wrong courses when the lengths happened to match.
+- Two layers: foreseen bad input (`limit`, `id`) gets a clear `GraphQLError` that helps the client fix the query; everything unforeseen (a database failure, a bug) is hidden by `MaskErrors` as `Unexpected error.`, so the internals (SQL, tables, parameters) don't leak, while the full text stays in the server log. Masking alone would hide useful messages, our checks alone would leak everything we did not think of.
