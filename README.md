@@ -157,3 +157,15 @@ Answers. Without protection the client learned the table and column names, the f
 ### 2. The createStudent mutation: one rule for REST and GraphQL
 
 Before: `python try_post.py "  " sp@example.com` → `201`, a student whose name is two spaces (Pydantic's `min_length=2` counts the spaces). The rule "at least two characters after `strip()`" went into `services.create_student` as `ServiceError("INVALID_NAME", …)`, `problem.py` got `"INVALID_NAME": (422, "invalid-name", "Invalid name")`, GraphQL got `CreateStudentInput`, `CreateStudentPayload` and `createStudent`. GraphQL: name `N` → `userErrors: INVALID_NAME`; a taken email → `EMAIL_TAKEN`; a new student → `student {id: "5"}`, `userErrors: []`. REST, the same two spaces → `422 application/problem+json`, `type …/invalid-name`. `try_graphql.py` still 8 of 8, the schema has `createStudent(input: CreateStudentInput!): CreateStudentPayload!`. With the `INVALID_NAME` line commented out in `PROBLEMS`, GraphQL kept answering `userErrors: INVALID_NAME` (it doesn't use the table), while REST answered `500 Internal Server Error` with `KeyError: 'INVALID_NAME'` in the server log. The rule is written once in the services layer, so both APIs enforce it the same way; a new error code needs one more step — a row in `PROBLEMS`, the REST translation table — otherwise REST can't translate the code and fails with 500.
+
+### 3. A blocking resolver: four requests at once
+
+`blocking_app.py` (port 8001, `SELECT pg_sleep(0.5)` through the session from `db.py`) and `blocking_client.py` were run from the project root and not added to the repository. Two runs, four simultaneous requests to each entrance:
+
+| Entrance | Run 1 | Run 2 |
+|----------|-------|-------|
+| REST, `def` route | 0.95 s | 0.82 s |
+| GraphQL, sync resolver | 2.32 s | 2.32 s |
+| GraphQL, `async` + `run_in_threadpool` | 0.80 s | 0.80 s |
+
+FastAPI runs a `def` route in a thread pool, so the four waits for the database overlap. Strawberry calls a synchronous resolver directly in the event-loop thread: while it waits for `pg_sleep`, the loop can't accept other requests, and the waits line up (4 × 0.5 s plus overhead). The difference between the second and the third variant is the line `return await run_in_threadpool(pause, info.context.db)`: the same blocking call is moved to a thread, and the loop stays free. Our parallel variants took 0.8 s rather than 0.5 s, probably because new connections to PostgreSQL are opened on Windows for the first concurrent requests; the ratio is the same. In our project the queries take milliseconds, so the loop is blocked for a moment and nobody notices; it becomes a problem with slow queries (big reports, a slow or remote database, external HTTP calls in resolvers) under many concurrent users: every user then waits for everyone else's queries. One session must not be shared between fields that run in parallel threads, so `run_in_threadpool` with the shared session is not a universal fix.
